@@ -67,8 +67,10 @@ def start_download():
             with yt_dlp.YoutubeDL(flat_opts) as ydl_flat:
                 info = ydl_flat.extract_info(playlist_url, download=False)
 
-            entries = info.get("entries", [])
-            if not entries and "webpage_url" in info:
+            entries = info.get("entries")
+            if entries:
+                entries = [e for e in entries if e]
+            else:
                 entries = [info]
 
             if not entries:
@@ -89,7 +91,7 @@ def start_download():
                         if entry is None:
                             continue
 
-                        video_url = entry.get("webpage_url") or entry.get("url")
+                        video_url = entry.get("webpage_url") or entry.get("url") or playlist_url
                         if not video_url:
                             continue
 
