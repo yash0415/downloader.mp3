@@ -28,6 +28,41 @@ if "zip_data" not in st.session_state:
 if "last_error" not in st.session_state:
     st.session_state.last_error = ""
 
+def build_download_opts():
+    if format_choice == "MP3 Audio":
+        opts = {
+            "format": "bestaudio/best",
+            "postprocessors": [{
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+                "preferredquality": "192",
+            }],
+            "merge_output_format": "mp3",
+        }
+    else:
+        opts = {
+            "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
+            "merge_output_format": "mp4",
+        }
+
+    opts.update({
+        "ignoreerrors": False,
+        "nooverwrites": True,
+        "quiet": True,
+        "noplaylist": False,
+        "nocheckcertificate": True,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+        },
+    })
+
+    try:
+        opts["impersonate"] = "chrome"
+    except Exception:
+        pass
+
+    return opts
+
 def start_download():
     if not playlist_url:
         st.warning("Please enter a URL first.")
@@ -41,32 +76,18 @@ def start_download():
     st.session_state.zip_data = None
     st.session_state.last_error = ""
 
-    if format_choice == "MP3 Audio":
-        file_ext = "mp3"
-        download_opts = {
-            "format": "bestaudio/best",
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }],
-            "ignoreerrors": False,
-            "nooverwrites": True,
-            "quiet": True,
-        }
-    else:
-        file_ext = "mp4"
-        download_opts = {
-            "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-            "merge_output_format": "mp4",
-            "ignoreerrors": False,
-            "nooverwrites": True,
-            "quiet": True,
-        }
-
     try:
         with st.spinner("Processing... this may take a while depending on the size."):
-            flat_opts = {"extract_flat": True, "quiet": True, "noplaylist": True}
+            flat_opts = {
+                "extract_flat": True,
+                "quiet": True,
+                "noplaylist": False,
+                "nocheckcertificate": True,
+                "http_headers": {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+                },
+            }
+
             with yt_dlp.YoutubeDL(flat_opts) as ydl_flat:
                 info = ydl_flat.extract_info(playlist_url, download=False)
 
@@ -86,8 +107,15 @@ def start_download():
             progress_bar = st.progress(0)
             status_text = st.empty()
 
+            download_opts = build_download_opts()
+
             with tempfile.TemporaryDirectory() as tmpdir:
                 download_opts["outtmpl"] = os.path.join(tmpdir, "%(title)s.%(ext)s")
+                download_opts["paths"] = {"home": tmpdir}
+
+                cookie_path = "cookies.txt"
+                if os.path.exists(cookie_path):
+                    download_opts["cookiefile"] = cookie_path
 
                 with yt_dlp.YoutubeDL(download_opts) as ydl:
                     for i, entry in enumerate(entries):
@@ -112,7 +140,8 @@ def start_download():
                 for root, _, files in os.walk(tmpdir):
                     for file in files:
                         file_path = os.path.join(root, file)
-                        downloaded_files.append(file_path)
+                        if os.path.isfile(file_path):
+                            downloaded_files.append(file_path)
 
                 if not downloaded_files:
                     st.error("No files were downloaded, so the ZIP is empty.")
