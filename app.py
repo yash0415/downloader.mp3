@@ -1,181 +1,123 @@
+"""
+Personal MP3 Downloader — Streamlit + yt-dlp
+=============================================
+FOR PERSONAL, LOCAL USE ONLY.
+
+This app is intended to run on your own machine for your own personal
+listening (e.g. archiving content you own the rights to, or downloading
+audio you have permission to keep offline). It is NOT intended to be
+deployed publicly or shared as a service to others — doing so would
+raise copyright/ToS concerns.
+
+Run it with:
+    streamlit run app.py
+"""
+
+import os
 import streamlit as st
 import yt_dlp
-import tempfile
-import os
-import zipfile
-import io
 
-st.set_page_config(page_title="YouTube Downloader", page_icon="🎬")
-st.title("🎬 YouTube Playlist / Single Video Downloader")
-st.write(
-    "Paste a playlist or single video URL, choose your format, and get all files "
-    "in one ZIP archive."
+DOWNLOAD_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "mp3_downloads")
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+st.set_page_config(page_title="Personal MP3 Downloader", page_icon="🎵")
+st.title("🎵 Personal MP3 Downloader")
+
+st.warning(
+    "For personal use only. Only download content you have the rights to "
+    "keep offline (your own uploads, Creative Commons tracks, or content "
+    "you've licensed). Do not deploy this app publicly or share downloaded "
+    "files with others."
 )
 
-playlist_url = st.text_input("Playlist or Video URL")
+url = st.text_input("YouTube URL (video or playlist)")
+quality = st.selectbox("MP3 quality (kbps)", ["128", "192", "256", "320"], index=3)
+is_playlist = st.checkbox("This is a playlist (download all tracks)")
 
-format_choice = st.radio(
-    "Choose output format:",
-    ("MP3 Audio", "MP4 Video (1080p)"),
-    index=0,
-    help="MP3: best audio quality (192 kbps). Video: best 1080p MP4 with audio."
-)
+progress_bar = st.progress(0)
+status_text = st.empty()
 
-if "downloading" not in st.session_state:
-    st.session_state.downloading = False
-if "zip_data" not in st.session_state:
-    st.session_state.zip_data = None
-if "last_error" not in st.session_state:
-    st.session_state.last_error = ""
 
-def build_download_opts():
-    if format_choice == "MP3 Audio":
-        opts = {
-            "format": "bestaudio/best",
-            "postprocessors": [{
-                "key": "FFmpegExtractAudio",
-                "preferredcodec": "mp3",
-                "preferredquality": "192",
-            }],
-            "merge_output_format": "mp3",
-        }
+def make_progress_hook():
+    def hook(d):
+        if d["status"] == "downloading":
+            total = d.get("total_bytes") or d.get("total_bytes_estimate")
+            downloaded = d.get("downloaded_bytes", 0)
+            if total:
+                progress_bar.progress(min(downloaded / total, 1.0))
+            filename = os.path.basename(d.get("filename", ""))
+            status_text.text(f"Downloading: {filename}")
+        elif d["status"] == "finished":
+            status_text.text("Converting to MP3...")
+    return hook
+
+
+if st.button("Download", type="primary"):
+    if not url.strip():
+        st.error("Please enter a URL.")
     else:
-        opts = {
-            "format": "bestvideo[height<=1080]+bestaudio/best[height<=1080]",
-            "merge_output_format": "mp4",
+        ydl_opts = {
+            "format": "bestaudio/best",
+            "outtmpl": os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s"),
+            "postprocessors": [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": "mp3",
+                    "preferredquality": quality,
+                }
+            ],
+            "noplaylist": not is_playlist,
+            "progress_hooks": [make_progress_hook()],
+            "quiet": True,
+            "no_warnings": True,
         }
 
-    opts.update({
-        "ignoreerrors": False,
-        "nooverwrites": True,
-        "quiet": True,
-        "noplaylist": False,
-        "nocheckcertificate": True,
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-        },
-    })
+        try:
+            with st.spinner("Fetching info..."):
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
 
-    try:
-        opts["impersonate"] = "chrome"
-    except Exception:
-        pass
+            def get_mp3_path(entry, ydl):
+                """Ask yt-dlp for the exact filename it used, then swap ext to mp3."""
+                raw_path = ydl.prepare_filename(entry)
+                base, _ = os.path.splitext(raw_path)
+                return base + ".mp3"
 
-    return opts
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                if "entries" in info:
+                    entries = [e for e in info["entries"] if e]
+                    st.success(f"Downloaded {len(entries)} tracks (saved on the server machine too)")
+                    for e in entries:
+                        title = e.get("title", "unknown")
+                        mp3_path = get_mp3_path(e, ydl)
+                        if os.path.exists(mp3_path):
+                            with open(mp3_path, "rb") as f:
+                                st.download_button(
+                                    label=f"⬇️ Download '{title}' to this device",
+                                    data=f.read(),
+                                    file_name=os.path.basename(mp3_path),
+                                    mime="audio/mpeg",
+                                    key=mp3_path,
+                                )
+                        else:
+                            st.write(f"⚠️ Couldn't locate file for: {title} (looked for `{mp3_path}`)")
+                else:
+                    title = info.get("title", "unknown")
+                    mp3_path = get_mp3_path(info, ydl)
+                    st.success(f"Downloaded: **{title}** (saved on the server machine too)")
+                    if os.path.exists(mp3_path):
+                        with open(mp3_path, "rb") as f:
+                            st.download_button(
+                                label="⬇️ Download to this device",
+                                data=f.read(),
+                                file_name=os.path.basename(mp3_path),
+                                mime="audio/mpeg",
+                            )
+                    else:
+                        st.write(f"⚠️ Couldn't locate file (looked for `{mp3_path}`)")
 
-def start_download():
-    if not playlist_url:
-        st.warning("Please enter a URL first.")
-        return
+        except Exception as e:
+            st.error(f"Error: {e}")
 
-    if st.session_state.downloading:
-        st.warning("A download is already in progress. Please wait.")
-        return
-
-    st.session_state.downloading = True
-    st.session_state.zip_data = None
-    st.session_state.last_error = ""
-
-    try:
-        with st.spinner("Processing... this may take a while depending on the size."):
-            flat_opts = {
-                "extract_flat": True,
-                "quiet": True,
-                "noplaylist": False,
-                "nocheckcertificate": True,
-                "http_headers": {
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-                },
-            }
-
-            with yt_dlp.YoutubeDL(flat_opts) as ydl_flat:
-                info = ydl_flat.extract_info(playlist_url, download=False)
-
-            entries = info.get("entries")
-            if entries:
-                entries = [e for e in entries if e]
-            else:
-                entries = [info]
-
-            if not entries:
-                st.error("No videos found. Check the URL.")
-                return
-
-            total = len(entries)
-            st.write(f"Found **{total}** video(s). Starting download...")
-
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-
-            download_opts = build_download_opts()
-
-            with tempfile.TemporaryDirectory() as tmpdir:
-                download_opts["outtmpl"] = os.path.join(tmpdir, "%(title)s.%(ext)s")
-                download_opts["paths"] = {"home": tmpdir}
-
-                cookie_path = "cookies.txt"
-                if os.path.exists(cookie_path):
-                    download_opts["cookiefile"] = cookie_path
-
-                with yt_dlp.YoutubeDL(download_opts) as ydl:
-                    for i, entry in enumerate(entries):
-                        if entry is None:
-                            continue
-
-                        video_url = entry.get("webpage_url") or entry.get("url") or playlist_url
-                        if not video_url:
-                            continue
-
-                        title = entry.get("title", "Unknown")
-                        status_text.text(f"Downloading ({i + 1}/{total}): {title}")
-
-                        try:
-                            ydl.download([video_url])
-                        except Exception as e:
-                            st.error(f"Failed: `{title}` – {e}")
-
-                        progress_bar.progress((i + 1) / total)
-
-                downloaded_files = []
-                for root, _, files in os.walk(tmpdir):
-                    for file in files:
-                        file_path = os.path.join(root, file)
-                        if os.path.isfile(file_path):
-                            downloaded_files.append(file_path)
-
-                if not downloaded_files:
-                    st.error("No files were downloaded, so the ZIP is empty.")
-                    st.stop()
-
-                status_text.text("Creating ZIP archive...")
-                zip_buffer = io.BytesIO()
-
-                with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for file_path in downloaded_files:
-                        arcname = os.path.basename(file_path)
-                        zf.write(file_path, arcname)
-
-                zip_buffer.seek(0)
-                st.session_state.zip_data = zip_buffer.getvalue()
-
-            status_text.text("✅ Done! Click the button below to download your ZIP.")
-            progress_bar.empty()
-
-    except Exception as e:
-        st.session_state.last_error = str(e)
-        st.error(f"An unexpected error occurred: {e}")
-    finally:
-        st.session_state.downloading = False
-
-st.button("Start Download", on_click=start_download)
-
-if st.session_state.last_error:
-    st.caption(f"Last error: {st.session_state.last_error}")
-
-if st.session_state.zip_data:
-    st.download_button(
-        label="⬇️ Download ZIP",
-        data=st.session_state.zip_data,
-        file_name="youtube_download.zip",
-        mime="application/zip",
-    )
+st.divider()
+st.caption(f"Files are saved locally to: `{DOWNLOAD_DIR}`")
