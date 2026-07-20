@@ -14,11 +14,10 @@ Run it with:
 """
 
 import os
+import shutil
+import tempfile
 import streamlit as st
 import yt_dlp
-
-DOWNLOAD_DIR = os.path.join(os.path.expanduser("~"), "Downloads", "mp3_downloads")
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 st.set_page_config(page_title="Personal MP3 Downloader", page_icon="🎵")
 st.title("🎵 Personal MP3 Downloader")
@@ -28,6 +27,12 @@ st.warning(
     "keep offline (your own uploads, Creative Commons tracks, or content "
     "you've licensed). Do not deploy this app publicly or share downloaded "
     "files with others."
+)
+
+st.info(
+    "Files are processed in a temporary folder on the machine running this "
+    "app and are deleted right after being sent to your browser — they are "
+    "not kept permanently on this device."
 )
 
 url = st.text_input("YouTube URL (video or playlist)")
@@ -56,9 +61,10 @@ if st.button("Download", type="primary"):
     if not url.strip():
         st.error("Please enter a URL.")
     else:
+        temp_dir = tempfile.mkdtemp(prefix="mp3_dl_")
         ydl_opts = {
             "format": "bestaudio/best",
-            "outtmpl": os.path.join(DOWNLOAD_DIR, "%(title)s.%(ext)s"),
+            "outtmpl": os.path.join(temp_dir, "%(title)s.%(ext)s"),
             "postprocessors": [
                 {
                     "key": "FFmpegExtractAudio",
@@ -70,12 +76,18 @@ if st.button("Download", type="primary"):
             "progress_hooks": [make_progress_hook()],
             "quiet": True,
             "no_warnings": True,
+            "ignoreerrors": True,   # skip unavailable/broken entries instead of stopping
         }
 
         try:
             with st.spinner("Fetching info..."):
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
+
+            if info is None:
+                st.error("This video/track is unavailable and could not be downloaded.")
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                st.stop()
 
             def get_mp3_path(entry, ydl):
                 """Ask yt-dlp for the exact filename it used, then swap ext to mp3."""
@@ -85,15 +97,19 @@ if st.button("Download", type="primary"):
 
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 if "entries" in info:
-                    entries = [e for e in info["entries"] if e]
-                    st.success(f"Downloaded {len(entries)} tracks (saved on the server machine too)")
+                    all_entries = info["entries"]
+                    entries = [e for e in all_entries if e]
+                    skipped = len(all_entries) - len(entries)
+                    st.success(f"Ready: {len(entries)} track(s) — tap each to save to this device")
+                    if skipped:
+                        st.warning(f"⏭️ Skipped {skipped} unavailable track(s) and continued with the rest.")
                     for e in entries:
                         title = e.get("title", "unknown")
                         mp3_path = get_mp3_path(e, ydl)
                         if os.path.exists(mp3_path):
                             with open(mp3_path, "rb") as f:
                                 st.download_button(
-                                    label=f"⬇️ Download '{title}' to this device",
+                                    label=f"⬇️ Save '{title}' to this device",
                                     data=f.read(),
                                     file_name=os.path.basename(mp3_path),
                                     mime="audio/mpeg",
@@ -104,11 +120,11 @@ if st.button("Download", type="primary"):
                 else:
                     title = info.get("title", "unknown")
                     mp3_path = get_mp3_path(info, ydl)
-                    st.success(f"Downloaded: **{title}** (saved on the server machine too)")
+                    st.success(f"Ready: **{title}** — tap below to save to this device")
                     if os.path.exists(mp3_path):
                         with open(mp3_path, "rb") as f:
                             st.download_button(
-                                label="⬇️ Download to this device",
+                                label="⬇️ Save to this device",
                                 data=f.read(),
                                 file_name=os.path.basename(mp3_path),
                                 mime="audio/mpeg",
@@ -118,6 +134,11 @@ if st.button("Download", type="primary"):
 
         except Exception as e:
             st.error(f"Error: {e}")
+        finally:
+            # Clean up the temp copy now that bytes have been handed to the browser widgets above.
+            # (Streamlit keeps the bytes in memory for the download_button, so it's safe to remove
+            # the on-disk temp copy at this point.)
+            shutil.rmtree(temp_dir, ignore_errors=True)
 
 st.divider()
-st.caption(f"Files are saved locally to: `{DOWNLOAD_DIR}`")
+st.caption("No files are kept permanently on this machine — only in a temporary folder during processing.")
